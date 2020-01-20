@@ -1,5 +1,6 @@
 #include <Arduino.h>
 #define DEBUG_ON 1
+//#undef DEBUG_ON
 #define WPS_ON 1
 
 #define localDomain "pogoda" /* local brooadcast domain name pogoda.local */
@@ -8,7 +9,13 @@
 
 
 #define AIO_SERVER      "io.adafruit.com"
-#define AIO_SERVERPORT  8883                   // use 8883 for SSL -1883
+#define AIO_SERVERPORT  8883             // use 8883 for SSL -1883
+
+#define feedTemp0 "/feeds/temperature0"
+#define feedHumi0 "/feeds/humidity0"
+#define feedPres0 "/feeds/pressure0"
+#define feedBatt0 "/feeds/battery0"
+
 
 typedef struct 
 {

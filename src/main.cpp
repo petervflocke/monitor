@@ -76,17 +76,29 @@ TimeChangeRule *tcr;
 
 time_t syncNTP();
 getExternalTime NtpTime = &syncNTP;
+time_t last_utc=0;
 
 AsyncWebServer server(80);
 AsyncEventSource events("/events");
 // ---------------- End Time & NTP Definitions ------------------------------------------------
 
-// --------- Start MQTT -----------------------------------------------------------------------
+// --------- Define  MQTT -----------------------------------------------------------------------
 WiFiClientSecure client;
-Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, AIO_USERNAME, AIO_KEY);
+Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, IO_USERNAME, IO_KEY);
+// Notice MQTT paths for AIO follow the form: <username>/feeds/<feedname>
+Adafruit_MQTT_Publish tempMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedTemp0);
+Adafruit_MQTT_Publish humiMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedHumi0);
+Adafruit_MQTT_Publish presMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedPres0);
+Adafruit_MQTT_Publish brigMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedBatt0);
+
+// Bug workaround for Arduino 1.6.6, it seems to need a function declaration
+// for some reason (only affects ESP8266, likely an arduino-builder bug).
+boolean MQTT_connect();
 // -------------------------------------------------------------------------------------------
 
+// -------- Define local sensor ---------------------------------------------------------------
 Adafruit_BME280 bme;
+// -------------------------------------------------------------------------------------------
 
 // --------- global sensors and its Json represenation ----------------------------------------
 Tdata sensorsData[sensorNumber];
@@ -96,11 +108,15 @@ char jsonData[370];
 
 // --------- Radio (Head) -------
 RH_ASK driver(2000, 4, 5, 0);
+// ------------------------------
 
 void setup()
 {
-  int i=0;
-
+  #if  DEBUG_ON
+    Serial.begin(115200);
+  #endif
+  
+  int i;
   for (i=0; i<sensorNumber; i++) {
     sensorsData[0].timeStamp = 0;
     sensorsData[0].temperature = 0.0;
@@ -108,14 +124,19 @@ void setup()
     sensorsData[0].pressure = 0.0;
     sensorsData[0].battery = 0.0;
 }
+
+  // bme.setSampling(Adafruit_BME280::MODE_FORCED,
+  //               Adafruit_BME280::SAMPLING_X1, // temperature
+  //               Adafruit_BME280::SAMPLING_X1, // pressure
+  //               Adafruit_BME280::SAMPLING_X1, // humidity
+  //               Adafruit_BME280::FILTER_OFF);
+  // bme.begin();
  
   pinMode(LED_BUILTIN, OUTPUT);     // setup buildin LED for future error and message info
   pinMode(configPin, INPUT_PULLUP); // setup wps and menu button as imput always high
 
   tft.init();
   tftUpdate(_None, CE);
-
-  Serial.begin(115200);
 
   //wait for WPS request via configPin button press
   i=0;
@@ -171,10 +192,6 @@ void setup()
       PRINTS("mDNS responder started\n");
     }
 
-    setSyncInterval(_setSyncInterval);
-    setSyncProvider(NtpTime);
-    
-
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send(200, "text/html", index_html);
     });
@@ -185,7 +202,11 @@ void setup()
     
     events.onConnect([](AsyncEventSourceClient *client){
       //setTime(syncNTP());
-      setSyncProvider(NtpTime);
+      //setSyncProvider(NtpTime);
+      setSyncInterval(0); // force imediate resync via syncNTP by next call of now()
+      last_utc = now();   // resync and update last_utc for refreshing 
+      setSyncInterval(_setSyncInterval); // restore default sync delay
+      // printDateTime(CE, now(),(timeStatus()==timeSet)? " OK":(timeStatus()==timeNeedsSync)? " Need Sync":" Not Set");
       updateJson();
       client->send(jsonData,"data",millis());
     });
@@ -201,12 +222,13 @@ void setup()
           blink();
       }    
   }
-  // setTime(syncNTP());
-  // tft.fillScreen(TFT_BLACK); // Clear Screen
+
+  setSyncInterval(_setSyncInterval);
+  setSyncProvider(NtpTime);
+  last_utc = now();
+
   currentState = 0;  // initial display status
 }
-
-time_t last_utc=0;
 
 void loop()
 {
@@ -238,15 +260,15 @@ void loop()
         sensorsData[sensorID].timeStamp = now();
         updateJson();
         events.send(jsonData,"data",millis());
-        printData(sensorsData[sensorID]);
+        //printData(sensorsData[sensorID]);
       }
     }
     if (now()-last_utc >= 1) {  // every second
-    last_utc = now();
-    updateJson();
-    events.send(jsonData,"data",millis());
-    tftUpdate(tableStates[currentState], CE);
-    // printDateTime(CE, last_utc,(timeStatus()==timeSet)? " OK":(timeStatus()==timeNeedsSync)? " Need Sync":" Not Set");
+      last_utc = now();
+      updateJson();
+      events.send(jsonData,"data",millis());
+      tftUpdate(tableStates[currentState], CE);
+      //printDateTime(CE, last_utc,(timeStatus()==timeSet)? " OK":(timeStatus()==timeNeedsSync)? " Need Sync":" Not Set");
     }
     if (button.uniquePress()) {
       currentState = (currentState + 1) % numberOfStates;
@@ -255,8 +277,6 @@ void loop()
     }
  }
 }
-
-// CE.toLocal(now(), &tcr)
 
 void updateJson() {
   time_t  t = CE.toLocal(now(), &tcr);
