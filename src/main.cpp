@@ -498,25 +498,24 @@ void tftUpdate(States displayState, Timezone tz) {
     }
   }
   else if (displayState == _Sensor1 || displayState == _Sensor2 || displayState == _Sensor3) {
-     
      switch (displayState) {
       case _Sensor1:
         sensor = 0;
         color = TFT_GREEN;
         place = "* Dom *";
-        tft.fillTriangle(160,20,140,20,150,0,color);
+        tft.fillTriangle(160,30,130,30,145,0, (second(t)%2)? color:TFT_BLACK);
         break;
       case _Sensor2:
         sensor = 1;
         color = TFT_BLUE;
         place = "* Ogrod *";
-        tft.fillCircle(150,10,10,color);
+        tft.fillCircle(145,15,15,(second(t)%2)? color:TFT_BLACK);
         break;
       case _Sensor3:
-        sensor = 1;
+        sensor = 2;
         color = TFT_ORANGE;
         place = "* Piwnica *";
-        tft.fillRect(140,0,20,20,color);
+        tft.fillRect(135,0,25,25,(second(t)%2)? color:TFT_BLACK);
      }
      tft.setTextColor(color, TFT_BLACK);
      posX = 0; posY =  0;
