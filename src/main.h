@@ -7,6 +7,10 @@
 #define _setSyncInterval 3600 /* how offten shall the standard NTP sync be fired */
 #define configPin 0  /* press button */
 
+const uint8_t sensorNumber = 3;
+const uint8_t feedNumber = 4;
+
+const uint8_t dataSize = 21; // data frame size
 
 #define AIO_SERVER      "io.adafruit.com"
 #define AIO_SERVERPORT  8883             // use 8883 for SSL -1883
@@ -15,6 +19,22 @@
 #define feedHumi0 "/feeds/humidity0"
 #define feedPres0 "/feeds/pressure0"
 #define feedBatt0 "/feeds/battery0"
+
+#define feedTemp1 "/feeds/temperature1"
+#define feedHumi1 "/feeds/humidity1"
+#define feedPres1 "/feeds/pressure1"
+#define feedBatt1 "/feeds/battery1"
+
+#define feedTemp2 "/feeds/temperature2"
+#define feedHumi2 "/feeds/humidity2"
+#define feedPres2 "/feeds/pressure2"
+#define feedBatt2 "/feeds/battery2"
+
+
+
+// define freq. to update MQTT/IOT page in mili seconds
+#define Time2UpdateMQTT 60000
+
 
 
 typedef struct 
@@ -75,9 +95,6 @@ const char jsonStruc[] PROGMEM = R"rawliteral(
 "hum2" :"%.0f",
 "pres2":"%.0f"}
 )rawliteral";
-
-const uint8_t sensorNumber = 3;
-const uint8_t dataSize = 21; // data frame size
 
 #if  DEBUG_ON
 #define PRINT(s, v) { Serial.print(s); Serial.print(v); }    

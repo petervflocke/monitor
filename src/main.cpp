@@ -68,6 +68,8 @@ void wpsInitConfig();
 String wpspin2string(uint8_t []);
 void WiFiEvent(WiFiEvent_t, system_event_info_t);
 void tftUpdate(States, Timezone);
+void taskMQTT( void * parameter );
+boolean MQTT_connect();
 
 
 // -------------- Start Time & NTP Definitions ------------------------------------------------
@@ -91,10 +93,7 @@ AsyncEventSource events("/events");
 WiFiClientSecure client;
 Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, IO_USERNAME, IO_KEY);
 // Notice MQTT paths for AIO follow the form: <username>/feeds/<feedname>
-Adafruit_MQTT_Publish tempMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedTemp0);
-Adafruit_MQTT_Publish humiMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedHumi0);
-Adafruit_MQTT_Publish presMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedPres0);
-Adafruit_MQTT_Publish brigMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedBatt0);
+Adafruit_MQTT_Publish *MQTTTable[sensorNumber][feedNumber];
 
 // Bug workaround for Arduino 1.6.6, it seems to need a function declaration
 // for some reason (only affects ESP8266, likely an arduino-builder bug).
@@ -241,6 +240,23 @@ void setup()
   last_utc = now();
 
   currentState = 0;  // initial display status
+
+  MQTTTable[0][0] = new Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedTemp0);
+// Adafruit_MQTT_Publish tempMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedTemp0);
+//  Adafruit_MQTT_Publish humiMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedHumi0);
+//  Adafruit_MQTT_Publish presMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedPres0);
+//  Adafruit_MQTT_Publish battMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedBatt0);
+
+
+  xTaskCreate(
+    taskMQTT,   /* start regular  MQTT update task*/
+   "taskMQTT",  /* name of task. */
+    8000,       /* Stack size of task */
+    NULL,       /* parameter of the task */
+    1,          /* priority of the task */
+    NULL);      /* Task handle to keep track of created task */
+
+
 }
 
 void loop()
@@ -578,4 +594,58 @@ void tftUpdate(States displayState, Timezone tz) {
     tft.drawCentreString("Pogoda", 80, 85, 4);  
   }
   lastState = displayState;
+}
+
+void taskMQTT( void * parameter ) {
+
+  const TickType_t xTicksToWait = pdMS_TO_TICKS(Time2UpdateMQTT);
+  UBaseType_t uxHighWaterMark;
+
+  while (true) {
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+    // Serial.print("\nStack IN:"); Serial.println(uxHighWaterMark);
+    vTaskDelay( xTicksToWait );
+    if ( MQTT_connect() ) {
+      PRINTS("MQTT publishing\n");
+      MQTTTable[0][0]-> publish( sensorsData[0].temperature );
+      //humiMQTT0.publish( sensorsData[0].humidity);
+      //presMQTT0.publish( sensorsData[0].pressure);
+      // battMQTT0.publish( sensorsData[0].battery);
+    }
+    uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+    // Serial.print("\nStack OUT:"); Serial.println(uxHighWaterMark);
+  }
+}
+
+
+// Function to connect and reconnect as necessary to the MQTT server.
+// Should be called in the loop function and it will take care if connecting.
+boolean MQTT_connect() {
+  int8_t ret;
+
+  // Stop if already connected.
+  if (mqtt.connected()) {
+    return true;
+  }
+
+  if (!WiFi.isConnected()) {
+    PRINTS("MQTT Connecting to WIFI... ");
+    WiFi.begin();
+    delay(1000);
+  }
+  
+  PRINTS("MQTT Connecting to MQTT... ");
+  uint8_t retries = 3;
+  while ( (ret = mqtt.connect()) != 0 && (retries > 0) ) { // connect will return 0 for connected
+       PRINTS(mqtt.connectErrorString(ret));PRINTLN;
+       PRINTS("Retrying MQTT connection in 5 seconds...\n");
+       mqtt.disconnect();
+       delay(5000);  // wait 5 seconds
+       retries--;
+  }
+  if (ret == 0) {
+    PRINTS("MQTT Connected!\n");
+    return true;
+  }
+  else return false;
 }
