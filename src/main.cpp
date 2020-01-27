@@ -15,8 +15,6 @@
 #include <Adafruit_ADXL345_U.h> //Accelerometer
 #include <Adafruit_MQTT.h>
 #include <Adafruit_MQTT_Client.h>
-
-
 #if WPS_ON
   #include "esp_wps.h"
 #endif
@@ -24,7 +22,7 @@
 #include "ESPAsyncWebServer.h"
 #include <Button.h>
 #include <TFT_eSPI.h> // Graphics and font library for ST7735 driver chip
-#include <RH_ASK.h>
+#include <RH_CC110.h> // Radio part
 #include <SPI.h> // Not actually used but needed to compile
 
 
@@ -45,6 +43,13 @@ boolean wpsNeeded=true;    // global flag for WPS main (empty) loop mode
 
 // ---------- TFT Display ------------------
 TFT_eSPI tft = TFT_eSPI();  // Invoke library, pins defined in platformio.ini or User_Setup_Select.h
+
+#define backlight 32
+const int freq = 5000;
+const int ledChannel = 0;
+const int resolution = 8;
+
+
 uint8_t currentState;
 #define numberOfStates 4
 States tableStates[] = {_Time, _Sensor1, _Sensor2, _Sensor3};
@@ -107,7 +112,7 @@ char jsonData[370];
 
 
 // --------- Radio (Head) -------
-RH_ASK driver(2000, 4, 5, 0);
+RH_CC110 cc110(5 /*slaveSelectPin SS,*/ , 4 /* interruptPin*/ , true /* bool is27MHz */);
 // ------------------------------
 
 void setup()
@@ -136,6 +141,11 @@ void setup()
   pinMode(configPin, INPUT_PULLUP); // setup wps and menu button as imput always high
 
   tft.init();
+  //* Set PWM for backlight */
+  ledcSetup(ledChannel, freq, resolution);
+  ledcAttachPin(backlight, ledChannel);
+  ledcWrite(ledChannel, 255);
+
   tftUpdate(_None, CE);
 
   //wait for WPS request via configPin button press
@@ -216,13 +226,16 @@ void setup()
     MDNS.addService("http", "tcp", 80);
   }
 //PP1  
-  if (!driver.init()) {
+  if (!cc110.init()) {
     PRINTS("Radio init failed\n");
-      while(1) {
-          blink();
-      }    
+      while(1) blink(); /* no radio => no further program exec. */
+    }
+  else { // Setup radio
+    cc110.setFrequency(433.0);
+    cc110.setTxPower(RH_CC110::TransmitPower10dBm);  /* max transmit power not needed in receiver, test and set to 0?*/
+    cc110.setModemConfig(RH_CC110::GFSK_Rb1_2Fd5_2); /* Modulation: GFSK_Rb1_2Fd5_2 (GFSK, Data Rate: 1.2kBaud, Dev: 5.2kHz, RX BW 58kHz, optimised for sensitivity) */
   }
-
+ 
   setSyncInterval(_setSyncInterval);
   setSyncProvider(NtpTime);
   last_utc = now();
@@ -232,21 +245,22 @@ void setup()
 
 void loop()
 {
-   uint8_t buf[RH_ASK_MAX_MESSAGE_LEN];
+   uint8_t buf[RH_CC110_MAX_MESSAGE_LEN];
    uint8_t buflen = sizeof(buf);
    uint8_t sensorID;
-   uint8_t volatile wpsSeconds = 0;
+   uint16_t static volatile wpsSeconds = 0;
 
  if (wpsNeeded) {
     PRINT("WPS ", wpsSeconds); PRINTLN;
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-    tft.drawString("Czekam na WPS:",0,40,4);
-    tft.drawNumber(wpsSeconds, 0,80,4);
+    tft.drawString("Wlacz WPS:",0,40,4);
+    tft.fillRect(0,80,160,48,TFT_BLACK);
+    tft.drawNumber(wpsSeconds++, 0,80,4);
     blink();
  } else {
   //PP2
-    if (driver.recv(buf, &buflen)) { // Non-blocking
-      // Message with a good checksum received, dump it.
+    if (cc110.available()) // data available => process
+    if (cc110.recv(buf, &buflen)) { // Message with a good checksum received, dump it.
       #if  DEBUG_ON
         //driver.printBuffer("Got:", buf, buflen);
         PRINT("Buf Len:", buflen); PRINTLN;
@@ -260,7 +274,7 @@ void loop()
         sensorsData[sensorID].timeStamp = now();
         updateJson();
         events.send(jsonData,"data",millis());
-        //printData(sensorsData[sensorID]);
+        printData(sensorsData[sensorID]);
       }
     }
     if (now()-last_utc >= 1) {  // every second

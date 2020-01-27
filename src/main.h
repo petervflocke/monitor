@@ -5,7 +5,7 @@
 
 #define localDomain "pogoda" /* local brooadcast domain name pogoda.local */
 #define _setSyncInterval 3600 /* how offten shall the standard NTP sync be fired */
-#define configPin 27  /* press button */
+#define configPin 0  /* press button */
 
 
 #define AIO_SERVER      "io.adafruit.com"
