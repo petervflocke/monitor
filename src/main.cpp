@@ -1,7 +1,10 @@
 #include <Arduino.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/semphr.h>
 #include "main.h"
 #include "index.h"
 #include "credentials.h"
+// #include "ioadafruit.h"
 #include <NTPClient.h>
 #include <WiFiUdp.h>
 #include <TimeLib.h>
@@ -56,6 +59,12 @@ States tableStates[] = {_Time, _Sensor1, _Sensor2, _Sensor3};
 
 // -----------------------------------------
 
+// ---------- Mutex for data buffer --------
+SemaphoreHandle_t bufMutex; 
+// -----------------------------------------
+
+
+
 // ---------- TFT Display ------------------
 Button button = Button(configPin, BUTTON_PULLUP_INTERNAL, true, 50);
 // -----------------------------------------
@@ -74,7 +83,7 @@ boolean MQTT_connect();
 
 // -------------- Start Time & NTP Definitions ------------------------------------------------
 WiFiUDP ntpUDP;
-NTPClient timeClient(ntpUDP, "europe.pool.ntp.org", 0);     /// get UTC
+NTPClient timeClient(ntpUDP, "time.google.com", 0);     /// get UTC
 // Central European Time (Frankfurt, Paris)
 TimeChangeRule CEST = {"CEST", Last, Sun, Mar, 2, 120};     // Central European Summer Time
 TimeChangeRule CET = {"CET ", Last, Sun, Oct, 3, 60};       // Central European Standard Time
@@ -92,7 +101,6 @@ AsyncEventSource events("/events");
 // --------- Define  MQTT -----------------------------------------------------------------------
 WiFiClientSecure client;
 Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, IO_USERNAME, IO_KEY);
-// Notice MQTT paths for AIO follow the form: <username>/feeds/<feedname>
 Adafruit_MQTT_Publish *MQTTTable[sensorNumber][feedNumber];
 
 // Bug workaround for Arduino 1.6.6, it seems to need a function declaration
@@ -122,11 +130,11 @@ void setup()
   
   int i;
   for (i=0; i<sensorNumber; i++) {
-    sensorsData[0].timeStamp = 0;
-    sensorsData[0].temperature = 0.0;
-    sensorsData[0].humidity = 0.0;
-    sensorsData[0].pressure = 0.0;
-    sensorsData[0].battery = 0.0;
+    sensorsData[i].timeStamp = 0;
+    sensorsData[i].temperature = 0.0;
+    sensorsData[i].humidity = 0.0;
+    sensorsData[i].pressure = 0.0;
+    sensorsData[i].battery = 0.0;
 }
 
   // bme.setSampling(Adafruit_BME280::MODE_FORCED,
@@ -183,6 +191,8 @@ void setup()
       blink();
     }
 
+    // client.setCACert(root_ca);
+
     timeClient.begin();
 
     if (i!=0) {
@@ -201,6 +211,13 @@ void setup()
       PRINTS("mDNS responder started\n");
     }
 
+    // Create semaphore for data buffer
+    bufMutex = xSemaphoreCreateMutex(); 
+    if (bufMutex == NULL) { 
+        PRINTS("Mutex can not be created\n"); 
+        while(1) blink(); /* no mutex => no further program exec. */
+    } 
+
     server.on("/", HTTP_GET, [](AsyncWebServerRequest *request){
       request->send(200, "text/html", index_html);
     });
@@ -216,47 +233,67 @@ void setup()
       last_utc = now();   // resync and update last_utc for refreshing 
       setSyncInterval(_setSyncInterval); // restore default sync delay
       // printDateTime(CE, now(),(timeStatus()==timeSet)? " OK":(timeStatus()==timeNeedsSync)? " Need Sync":" Not Set");
-      updateJson();
+      xSemaphoreTake(bufMutex, portMAX_DELAY);
+        updateJson();
+      xSemaphoreGive(bufMutex);
       client->send(jsonData,"data",millis());
+      PRINT("\nonConnect on core: ", xPortGetCoreID());PRINTLN;
     });
     
     server.addHandler(&events);
     server.begin();
     MDNS.addService("http", "tcp", 80);
-  }
-//PP1  
-  if (!cc110.init()) {
-    PRINTS("Radio init failed\n");
-      while(1) blink(); /* no radio => no further program exec. */
+
+    if (!cc110.init()) {
+      PRINTS("Radio init failed\n");
+        while(1) blink(); /* no radio => no further program exec. */
+      }
+    else { // Setup radio
+      cc110.setFrequency(433.0);
+      cc110.setTxPower(RH_CC110::TransmitPower10dBm);  /* max transmit power not needed in receiver, test and set to 0?*/
+      cc110.setModemConfig(RH_CC110::GFSK_Rb1_2Fd5_2); /* Modulation: GFSK_Rb1_2Fd5_2 (GFSK, Data Rate: 1.2kBaud, Dev: 5.2kHz, RX BW 58kHz, optimised for sensitivity) */
     }
-  else { // Setup radio
-    cc110.setFrequency(433.0);
-    cc110.setTxPower(RH_CC110::TransmitPower10dBm);  /* max transmit power not needed in receiver, test and set to 0?*/
-    cc110.setModemConfig(RH_CC110::GFSK_Rb1_2Fd5_2); /* Modulation: GFSK_Rb1_2Fd5_2 (GFSK, Data Rate: 1.2kBaud, Dev: 5.2kHz, RX BW 58kHz, optimised for sensitivity) */
-  }
- 
-  setSyncInterval(_setSyncInterval);
-  setSyncProvider(NtpTime);
-  last_utc = now();
+  
+    setSyncInterval(_setSyncInterval);
+    setSyncProvider(NtpTime);
+    last_utc = now();
 
-  currentState = 0;  // initial display status
+    currentState = 0;  // initial display status
 
-  MQTTTable[0][0] = new Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedTemp0);
-// Adafruit_MQTT_Publish tempMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedTemp0);
-//  Adafruit_MQTT_Publish humiMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedHumi0);
-//  Adafruit_MQTT_Publish presMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedPres0);
-//  Adafruit_MQTT_Publish battMQTT0 = Adafruit_MQTT_Publish(&mqtt, IO_USERNAME feedBatt0);
+    for (i = 0; i < sensorNumber; i++) {
+      for (int j = 0; j < feedNumber; j++) {
+        // Notice MQTT paths for AIO follow the form: <username>/feeds/<feedname>
+        if (feedsTable[i][j] !=fD) {
+          MQTTTable[i][j] = new Adafruit_MQTT_Publish(&mqtt, feedsTable[i][j].c_str());
+      //   PRINT("Feed : ",i);
+      //   PRINT(" , ",j);
+      //   PRINT(" => ", feedsTable[i][j]); // MQTTTable[i][j]->topic);
+      //   PRINTLN;
+        }
+      }
+    }
+
+// while(1) blink();
+    // xTaskCreate(
+    //   taskMQTT,   /* start regular  MQTT update task*/
+    // "taskMQTT",  /* name of task. */
+    //   8000,       /* Stack size of task */
+    //   NULL,       /* parameter of the task */
+    //   1,          /* priority of the task */
+    //   NULL);      /* Task handle to keep track of created task */
 
 
-  xTaskCreate(
-    taskMQTT,   /* start regular  MQTT update task*/
-   "taskMQTT",  /* name of task. */
-    8000,       /* Stack size of task */
-    NULL,       /* parameter of the task */
-    1,          /* priority of the task */
-    NULL);      /* Task handle to keep track of created task */
+    xTaskCreatePinnedToCore(
+      taskMQTT,   /* start regular  MQTT update task*/
+    "taskMQTT",   /* name of task. */
+      8000,       /* Stack size of task */
+      NULL,       /* parameter of the task */
+      0,          /* priority of the task */
+      NULL,       /* Task handle to keep track of created task */
+      0);         /* pin to core 0, as loop is on core 1 */
 
 
+  } // end WPS not needed
 }
 
 void loop()
@@ -266,7 +303,7 @@ void loop()
    uint8_t sensorID;
    uint16_t static volatile wpsSeconds = 0;
 
- if (wpsNeeded) {
+  if (wpsNeeded) {
     PRINT("WPS ", wpsSeconds); PRINTLN;
     tft.setTextColor(TFT_WHITE, TFT_BLACK);
     tft.drawString("Wlacz WPS:",0,40,4);
@@ -274,7 +311,6 @@ void loop()
     tft.drawNumber(wpsSeconds++, 0,80,4);
     blink();
  } else {
-  //PP2
     if (cc110.available()) // data available => process
     if (cc110.recv(buf, &buflen)) { // Message with a good checksum received, dump it.
       #if  DEBUG_ON
@@ -285,9 +321,13 @@ void loop()
       if (buflen==dataSize) {
         //data = *(Tdata *) buf;
         sensorID=(*reinterpret_cast<Tdata *> (buf)).sensorID;
+        
+        xSemaphoreTake(bufMutex, portMAX_DELAY);
         memcpy(&sensorsData[sensorID],&buf, sizeof(Tdata));
-        PRINT("Sensor ID: ", sensorID); PRINTLN;
         sensorsData[sensorID].timeStamp = now();
+        xSemaphoreGive(bufMutex);        
+        PRINT("Sensor ID: ", sensorID); PRINTLN;
+
         updateJson();
         events.send(jsonData,"data",millis());
         printData(sensorsData[sensorID]);
@@ -304,6 +344,9 @@ void loop()
       currentState = (currentState + 1) % numberOfStates;
       tftUpdate(tableStates[currentState], CE);
       PRINT("CurrentState :", currentState);PRINTLN;
+
+      PRINT("\nRun on core: ",xPortGetCoreID());PRINTLN;
+
     }
  }
 }
@@ -453,6 +496,7 @@ void printData(Tdata& data)
 
 void printDateTime(Timezone tz, time_t utc, const char *descr)
 {
+ #if DEBUG_ON
     char buf[40];
     char m[4];    // temporary storage for month string (DateStrings.cpp uses shared buffer)
     TimeChangeRule *tcr;        // pointer to the time change rule, use to get the TZ abbrev
@@ -462,9 +506,8 @@ void printDateTime(Timezone tz, time_t utc, const char *descr)
     sprintf(buf, "%.2d:%.2d:%.2d %s %.2d %s %d %s",
         hour(t), minute(t), second(t), dayShortStr(weekday(t)), day(t), m, year(t), tcr -> abbrev);
     PRINTS(buf); PRINTS(descr); PRINTLN;
+#endif
 }
-
-
 
 // ---------------- End debug and other print functions ------------------
 
@@ -482,7 +525,7 @@ void tftUpdate(States displayState, Timezone tz) {
 
   time_t t = tz.toLocal(now(), &tcr);
 
-  char buf[15];
+  char buf[20];
 
   tft.setRotation(1);
   tft.setTextSize(1);
@@ -532,37 +575,40 @@ void tftUpdate(States displayState, Timezone tz) {
       case _Sensor1:
         sensor = 0;
         color = TFT_GREEN;
-        place = "* Dom *";
+        place = "Dom ";
         tft.fillTriangle(160,30,130,30,145,0, (second(t)%2)? color:TFT_BLACK);
         break;
       case _Sensor2:
         sensor = 1;
         color = TFT_BLUE;
-        place = "* Ogrod *";
+        place = "Ogrod ";
         tft.fillCircle(145,15,15,(second(t)%2)? color:TFT_BLACK);
         break;
       case _Sensor3:
         sensor = 2;
         color = TFT_ORANGE;
-        place = "* Piwnica *";
+        place = "Piwnica ";
         tft.fillRect(135,0,25,25,(second(t)%2)? color:TFT_BLACK);
      }
-     tft.setTextColor(color, TFT_BLACK);
-     posX = 0; posY =  0;
-     tft.drawString(place, posX, posY, 2);
-     tft.setTextColor(TFT_WHITE, TFT_BLACK);
-     sprintf(buf, "T: %.1f*C", sensorsData[sensor].temperature);
-     posY += 20;
-     tft.drawString(buf, posX, posY, 4);
-     sprintf(buf, "W: %.0f%%", sensorsData[sensor].humidity);
-     posY += FONTSIZE;
-     tft.drawString(buf,  posX, posY, 4);
-     sprintf(buf, "C: %.0fHPa", sensorsData[sensor].pressure);
-     posY += FONTSIZE;
-     tft.drawString(buf, posX, posY, 4);
-     sprintf(buf, "B: %.2fV", sensorsData[sensor].battery);
-     posY += FONTSIZE;
-     tft.drawString(buf,  posX, posY, 4);           
+    t = tz.toLocal(sensorsData[sensor].timeStamp, &tcr);
+    sprintf(buf, "%.2d:%.2d:%.2d", hour(t), minute(t), second(t));
+    place += String(buf);
+    tft.setTextColor(color, TFT_BLACK);
+    posX = 0; posY =  0;
+    tft.drawString(place, posX, posY, 2);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    sprintf(buf, "T: %.1f*C", sensorsData[sensor].temperature);
+    posY += 20;
+    tft.drawString(buf, posX, posY, 4);
+    sprintf(buf, "W: %.0f%%", sensorsData[sensor].humidity);
+    posY += FONTSIZE;
+    tft.drawString(buf,  posX, posY, 4);
+    sprintf(buf, "C: %.0fHPa", sensorsData[sensor].pressure);
+    posY += FONTSIZE;
+    tft.drawString(buf, posX, posY, 4);
+    sprintf(buf, "B: %.2fV", sensorsData[sensor].battery);
+    posY += FONTSIZE;
+    tft.drawString(buf,  posX, posY, 4);           
   }
   else if (displayState == _WIFI) {
     PRINTS("Connecting WIFI\n");
@@ -598,7 +644,11 @@ void tftUpdate(States displayState, Timezone tz) {
 
 void taskMQTT( void * parameter ) {
 
+  char buf[40];
+  TimeChangeRule *tcr;
+
   const TickType_t xTicksToWait = pdMS_TO_TICKS(Time2UpdateMQTT);
+  // const TickType_t xTicksToWait = Time2UpdateMQTT / portTICK_PERIOD_MS;
   UBaseType_t uxHighWaterMark;
 
   while (true) {
@@ -606,11 +656,21 @@ void taskMQTT( void * parameter ) {
     // Serial.print("\nStack IN:"); Serial.println(uxHighWaterMark);
     vTaskDelay( xTicksToWait );
     if ( MQTT_connect() ) {
+      xSemaphoreTake(bufMutex, portMAX_DELAY); 
       PRINTS("MQTT publishing\n");
-      MQTTTable[0][0]-> publish( sensorsData[0].temperature );
-      //humiMQTT0.publish( sensorsData[0].humidity);
-      //presMQTT0.publish( sensorsData[0].pressure);
-      // battMQTT0.publish( sensorsData[0].battery);
+      PRINT("\nMQTT on core: ",xPortGetCoreID());PRINTLN;
+      for (int i = 0; i < sensorNumber; i++) {
+        if (feedsTable[i][0] !=fD) MQTTTable[i][0] -> publish( sensorsData[i].temperature );
+        if (feedsTable[i][1] !=fD) MQTTTable[i][1] -> publish( sensorsData[i].humidity );
+        if (feedsTable[i][2] !=fD) MQTTTable[i][2] -> publish( sensorsData[i].pressure );
+        if (feedsTable[i][3] !=fD) MQTTTable[i][3] -> publish( sensorsData[i].battery );
+        if (feedsTable[i][4] !=fD) {
+          time_t t = CE.toLocal(sensorsData[i].timeStamp, &tcr);
+          sprintf(buf, "%.2d:%.2d:%.2d  %.2d.%.2d.%.4d", hour(t), minute(t), second(t), day(t), month(t), year(t));
+          MQTTTable[i][4] -> publish( buf );
+        }
+      }
+      xSemaphoreGive(bufMutex);        
     }
     uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
     // Serial.print("\nStack OUT:"); Serial.println(uxHighWaterMark);
