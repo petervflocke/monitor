@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "credentials.h"
 #define DEBUG_ON 1
-//#undef DEBUG_ON
+#undef DEBUG_ON
 #define WPS_ON 1
 
 #define localDomain "pogoda" /* local brooadcast domain name pogoda.local */
