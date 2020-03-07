@@ -1,7 +1,7 @@
 #include <Arduino.h>
 #include "credentials.h"
 #define DEBUG_ON 1
-#undef DEBUG_ON
+// #undef DEBUG_ON
 #define WPS_ON 1
 
 #define localDomain "pogoda" /* local brooadcast domain name pogoda.local */
@@ -12,7 +12,7 @@
 #define feedNumber   5
 #define fD          "-"
 
-const uint8_t dataSize = 21; // data frame size
+#define dataSize 18 /* incoming data frame size */
 
 #define AIO_SERVER      "io.adafruit.com"
 #define AIO_SERVERPORT  8883             // use 8883 for SSL -1883
@@ -21,9 +21,9 @@ const uint8_t dataSize = 21; // data frame size
 // io.Adafruit free accound restricted only to 10 feeds! fD disables a feed
 const String feedsTable [sensorNumber][feedNumber] = {
   // Temperature, Humidity, Preasure, Battery, Date
-  {IO_USERNAME FEEDS "t0", IO_USERNAME FEEDS "h0", IO_USERNAME FEEDS "p0", IO_USERNAME FEEDS "b0", IO_USERNAME FEEDS "d0"},
-  {IO_USERNAME FEEDS "t1", IO_USERNAME FEEDS "h1",                    fD,                     fD,                     fD },
-  {IO_USERNAME FEEDS "t2", IO_USERNAME FEEDS "h2",                    fD,                     fD,  IO_USERNAME FEEDS "d2"}
+  {IO_USERNAME FEEDS "t0", IO_USERNAME FEEDS "h0", IO_USERNAME FEEDS "p0",                    fD , IO_USERNAME FEEDS "d0"},
+  {IO_USERNAME FEEDS "t1", IO_USERNAME FEEDS "h1",                    fD , IO_USERNAME FEEDS "b0",                    fD },
+  {IO_USERNAME FEEDS "t2", IO_USERNAME FEEDS "h2",                    fD ,                    fD , IO_USERNAME FEEDS "d2"}
 };
 
 // define freq. to update MQTT/IOT page in mili seconds
@@ -35,9 +35,7 @@ typedef struct
   float humidity;
   float pressure;
   float battery;
-  long  counter;
-  uint8_t  sensorID; 
-  long  dummy;
+  uint16_t  sensorID; 
   time_t timeStamp;
 } Tdata;
 
@@ -66,6 +64,7 @@ enum States
 #define LEDY 20
 #define LEDR 10
 #define FONTSIZE 26
+#define ROTTR 8
 
 
 

@@ -14,8 +14,9 @@
 //#include "WiFi.h"
 #include <WiFiClientSecure.h>
 #include <Adafruit_Sensor.h>
-#include <Adafruit_BME280.h>
+#include <Adafruit_BME280.h>    // Temp
 #include <Adafruit_ADXL345_U.h> //Accelerometer
+#include <ErriezBH1750.h>       // Light
 #include <Adafruit_MQTT.h>
 #include <Adafruit_MQTT_Client.h>
 #if WPS_ON
@@ -42,10 +43,11 @@
   static esp_wps_config_t config;
 #endif
 boolean wpsNeeded=true;    // global flag for WPS main (empty) loop mode
-// -----------------------------------------
 
-// ---------- TFT Display ------------------
+
+// ---------- TFT Display & Button ------------------
 TFT_eSPI tft = TFT_eSPI();  // Invoke library, pins defined in platformio.ini or User_Setup_Select.h
+Button button = Button(configPin, BUTTON_PULLUP_INTERNAL, true, 50);
 
 #define backlight 32
 const int freq = 5000;
@@ -64,11 +66,6 @@ SemaphoreHandle_t bufMutex;
 // -----------------------------------------
 
 
-
-// ---------- TFT Display ------------------
-Button button = Button(configPin, BUTTON_PULLUP_INTERNAL, true, 50);
-// -----------------------------------------
-
 void updateJson();
 void blink();
 void printData(Tdata&);
@@ -79,6 +76,7 @@ void WiFiEvent(WiFiEvent_t, system_event_info_t);
 void tftUpdate(States, Timezone);
 void taskMQTT( void * parameter );
 boolean MQTT_connect();
+void readLocalSens();
 
 
 // -------------- Start Time & NTP Definitions ------------------------------------------------
@@ -96,36 +94,37 @@ time_t last_utc=0;
 
 AsyncWebServer server(80);
 AsyncEventSource events("/events");
-// ---------------- End Time & NTP Definitions ------------------------------------------------
+
 
 // --------- Define  MQTT -----------------------------------------------------------------------
 WiFiClientSecure client;
 Adafruit_MQTT_Client mqtt(&client, AIO_SERVER, AIO_SERVERPORT, IO_USERNAME, IO_KEY);
 Adafruit_MQTT_Publish *MQTTTable[sensorNumber][feedNumber];
-
-// Bug workaround for Arduino 1.6.6, it seems to need a function declaration
-// for some reason (only affects ESP8266, likely an arduino-builder bug).
 boolean MQTT_connect();
-// -------------------------------------------------------------------------------------------
 
-// -------- Define local sensor ---------------------------------------------------------------
-Adafruit_BME280 bme;
-// -------------------------------------------------------------------------------------------
 
 // --------- global sensors and its Json represenation ----------------------------------------
 Tdata sensorsData[sensorNumber];
 char jsonData[370];
-// --------- end sensors and its Json represenation -------------------------------------------
+
 
 
 // --------- Radio (Head) -------
 RH_CC110 cc110(5 /*slaveSelectPin SS,*/ , 4 /* interruptPin*/ , true /* bool is27MHz */);
-// ------------------------------
+
+
+
+// --------- I2C sensors --------
+Adafruit_BME280 TempSensor;
+BH1750 LightSensor(LOW);
+Adafruit_ADXL345_Unified accelSensor = Adafruit_ADXL345_Unified(12345);
+
 
 void setup()
 {
   #if  DEBUG_ON
     Serial.begin(115200);
+    delay(50);
   #endif
   
   int i;
@@ -135,14 +134,28 @@ void setup()
     sensorsData[i].humidity = 0.0;
     sensorsData[i].pressure = 0.0;
     sensorsData[i].battery = 0.0;
-}
+  }
 
-  // bme.setSampling(Adafruit_BME280::MODE_FORCED,
-  //               Adafruit_BME280::SAMPLING_X1, // temperature
-  //               Adafruit_BME280::SAMPLING_X1, // pressure
-  //               Adafruit_BME280::SAMPLING_X1, // humidity
-  //               Adafruit_BME280::FILTER_OFF);
-  // bme.begin();
+  if (!TempSensor.begin(0x76)) {
+    PRINTS("Could not find a valid temp sensor, check wiring.\n");
+    PRINTX("Sensor address: 0x", TempSensor.sensorID());PRINTLN;
+    while(1) { blink(); }
+  }
+  TempSensor.setSampling(Adafruit_BME280::MODE_NORMAL,
+                         Adafruit_BME280::SAMPLING_X16, // temperature
+                         Adafruit_BME280::SAMPLING_X16, // pressure
+                         Adafruit_BME280::SAMPLING_X16, // humidity
+                         Adafruit_BME280::FILTER_X16);
+
+  LightSensor.begin(ModeContinuous, ResolutionHigh);
+  LightSensor.startConversion();
+
+  if(!accelSensor.begin())  {
+    /* There was a problem detecting the ADXL345 ... check your connections */
+    PRINTS("Ooops, no ADXL345 detected ... Check your wiring!");
+    while(1) { blink(); }
+  }
+  accelSensor.setRange(ADXL345_RANGE_16_G);
  
   pinMode(LED_BUILTIN, OUTPUT);     // setup buildin LED for future error and message info
   pinMode(configPin, INPUT_PULLUP); // setup wps and menu button as imput always high
@@ -193,12 +206,14 @@ void setup()
 
     // client.setCACert(root_ca);
 
+    PRINTS("Start Time Sync\n");
     timeClient.begin();
 
     if (i!=0) {
       tftUpdate(_WIFIConnected, CE);
 
       if (!timeClient.update()) {
+        PRINTS("NTPFailed\n");
         tftUpdate(_NTPFailed, CE);
       };
 
@@ -273,7 +288,6 @@ void setup()
       }
     }
 
-// while(1) blink();
     // xTaskCreate(
     //   taskMQTT,   /* start regular  MQTT update task*/
     // "taskMQTT",  /* name of task. */
@@ -292,7 +306,7 @@ void setup()
       NULL,       /* Task handle to keep track of created task */
       0);         /* pin to core 0, as loop is on core 1 */
 
-
+    PRINTS("Start Main Loop\n");
   } // end WPS not needed
 }
 
@@ -314,7 +328,6 @@ void loop()
     if (cc110.available()) // data available => process
     if (cc110.recv(buf, &buflen)) { // Message with a good checksum received, dump it.
       #if  DEBUG_ON
-        //driver.printBuffer("Got:", buf, buflen);
         PRINT("Buf Len:", buflen); PRINTLN;
         PRINT("Size of TData:", sizeof(Tdata)); PRINTLN;
       #endif
@@ -323,17 +336,18 @@ void loop()
         sensorID=(*reinterpret_cast<Tdata *> (buf)).sensorID;
         
         xSemaphoreTake(bufMutex, portMAX_DELAY);
-        memcpy(&sensorsData[sensorID],&buf, sizeof(Tdata));
-        sensorsData[sensorID].timeStamp = now();
+          memcpy(&sensorsData[sensorID],&buf, sizeof(Tdata));
+          sensorsData[sensorID].timeStamp = now();
+          updateJson();
         xSemaphoreGive(bufMutex);        
+        
         PRINT("Sensor ID: ", sensorID); PRINTLN;
-
-        updateJson();
         events.send(jsonData,"data",millis());
         printData(sensorsData[sensorID]);
       }
     }
     if (now()-last_utc >= 1) {  // every second
+      readLocalSens();
       last_utc = now();
       updateJson();
       events.send(jsonData,"data",millis());
@@ -349,6 +363,15 @@ void loop()
 
     }
  }
+}
+
+void readLocalSens() {
+  xSemaphoreTake(bufMutex, portMAX_DELAY);
+  sensorsData[0].temperature = TempSensor.readTemperature();
+  sensorsData[0].humidity = TempSensor.readHumidity();
+  sensorsData[0].pressure = TempSensor.readPressure()/100.0F;
+  sensorsData[0].timeStamp = now();
+  xSemaphoreGive(bufMutex);     
 }
 
 void updateJson() {
@@ -372,7 +395,7 @@ void updateJson() {
       hour(t2), minute(t2), second(t2), day(t2), month(t2), year(t2)%100U,  
       sensorsData[2].temperature,
       sensorsData[2].humidity,
-      (float)sensorsData[0].counter);
+      sensorsData[2].pressure);
 }
 
 time_t syncNTP() {
@@ -491,7 +514,7 @@ void printData(Tdata& data)
     PRINT ("Humidity    = ", data.humidity);    PRINTS(" %\n");
     PRINT ("Battery     = ", data.battery);     PRINTS(" V\n");
     PRINTS("Time        = "); printDateTime(CE, data.timeStamp,(timeStatus()==timeSet)? " OK":(timeStatus()==timeNeedsSync)? " Need Sync":" Not Set");
-    PRINT ("Counter     = ", data.counter);     PRINTLN;
+    PRINTLN;
 }
 
 void printDateTime(Timezone tz, time_t utc, const char *descr)
@@ -509,14 +532,16 @@ void printDateTime(Timezone tz, time_t utc, const char *descr)
 #endif
 }
 
-// ---------------- End debug and other print functions ------------------
 
 void tftUpdate(States displayState, Timezone tz) {
+  static uint16_t preRotation=255;    
+  uint16_t rotation;
+
   TimeChangeRule *tcr;
   
-  static volatile int lastMinute = 99;
-  static volatile int lastDay    = 0;
-  static volatile States lastState  = _None;
+  static int lastMinute = 99;
+  static int lastDay    = 0;
+  static States lastState  = _None;
 
   uint8_t posX, posY, colonX;
   uint8_t sensor;
@@ -527,7 +552,48 @@ void tftUpdate(States displayState, Timezone tz) {
 
   char buf[20];
 
-  tft.setRotation(1);
+//  uint16_t lux = LightSensor.read();
+//  long dutyCycle = map(constrain(lux,2,10000), 2, 10000, 2, 255);
+///  ledcWrite(ledChannel, dutyCycle);
+  ledcWrite(ledChannel, map(constrain(LightSensor.read(),2,10000), 2, 10000, 2, 255));
+  // PRINT("lux: ", lux);
+  // PRINT("  dutyCycle:  ", dutyCycle);
+  // PRINTLN;
+
+
+    sensors_event_t event; 
+    accelSensor.getEvent(&event);
+    if        ( event.acceleration.y >= ROTTR ) {
+      rotation = 1;
+      tft.setRotation(1);
+      PRINT("R 1: ", rotation); PRINTLN;
+    } else if ( event.acceleration.z >= ROTTR ) {
+      rotation = 0;
+      tft.setRotation(2);
+      PRINT("R 2: ", rotation); PRINTLN;
+    } else if ( event.acceleration.y <= -ROTTR) {
+      rotation = 1;
+      tft.setRotation(3);
+      PRINT("R 3: ", rotation); PRINTLN;
+    } else if ( event.acceleration.z <= -ROTTR) {
+      rotation = 0;
+      tft.setRotation(0);
+      PRINT("R 0: ", rotation); PRINTLN;
+    } else {
+      rotation = 1;
+      tft.setRotation(1);
+      PRINT("R E: ", rotation); PRINTLN;
+    }
+    // Serial.print("X: "); Serial.print(event.acceleration.x); Serial.print("  ");
+    // Serial.print("Y: "); Serial.print(event.acceleration.y); Serial.print("  ");
+    // Serial.print("Z: "); Serial.print(event.acceleration.z); Serial.println();
+
+  if (preRotation != rotation) {
+    tft.fillScreen(TFT_BLACK); 
+  }
+
+  
+
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   
@@ -545,29 +611,54 @@ void tftUpdate(States displayState, Timezone tz) {
     posX  = TIMEX;
     posY  = TIMEY;
     colonX = TIMEX + 64;
-    if (lastMinute != minute(t) || lastState != displayState) {
+    if (lastMinute != minute(t) || lastState != displayState || preRotation != rotation) {
       lastMinute = minute(t);
       tft.setTextColor(TFT_myGray, TFT_BLACK); // ghost 88:88 image
-      tft.drawString("88:88",posX,posY,7); // Overwrite the text to clear it
+      if (rotation == 1) {
+        tft.drawString("88:88",posX,posY,7); // Overwrite the text to clear it
+      } else {
+        tft.drawString("88",34, 2,7); // Overwrite the text to clear it
+        tft.drawString("88",34,65,7); // Overwrite the text to clear it
+      }
       if (timeStatus()==timeSet) tft.setTextColor(TFT_WHITE);
       else                       tft.setTextColor(TFT_YELLOW);
-
-      sprintf(buf, "%.2d:%.2d", hour(t), minute(t));
-      tft.drawString(buf, posX, posY,7); 
+      if (rotation == 1) {
+        sprintf(buf, "%.2d:%.2d", hour(t), minute(t));
+        tft.drawString(buf, posX, posY,7); 
+      } else {
+        sprintf(buf, "%.2d", hour(t));
+        tft.drawString(buf,34, 2,7); // Overwrite the text to clear it
+        sprintf(buf, "%.2d", minute(t));
+        tft.drawString(buf,34,65,7); // Overwrite the text to clear it
+      }
     }
     if (second(t)%2) { // Flash the colon 0x39C4
-      tft.setTextColor(TFT_myGray, TFT_BLACK);
-      posX+= tft.drawChar(':', colonX, posY, 7);
-      tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      if (rotation == 1) {    
+        tft.setTextColor(TFT_myGray, TFT_BLACK);
+        posX+= tft.drawChar(':', colonX, posY, 7);
+        tft.setTextColor(TFT_WHITE, TFT_BLACK);
+      } else {
+        tft.fillRect (34, 56, 60, 2, TFT_WHITE);
+      }
     }
     else {
-      tft.drawChar(':', colonX, posY, 7);
+      if (rotation == 1) {    
+        tft.drawChar(':', colonX, posY, 7);
+      } else {
+        //tft.drawFastHLine(34, 56, 60, TFT_BLACK);
+        tft.fillRect (34, 56, 60, 2, TFT_BLACK);
+      }
     }
-    if (lastDay != day(t) || lastState != displayState) {
+    if (lastDay != day(t) || lastState != displayState || preRotation != rotation) {
       lastDay = day(t);
       sprintf(buf, "%.2d.%.2d.%.2d", day(t), month(t), year(t)%100U);
-      tft.fillRect (0, 85, 160, 26, TFT_BLACK);
-      tft.drawCentreString(buf, 80, 85, 4); 
+      if (rotation == 1) {
+        tft.fillRect (0, 85, 160, 26, TFT_BLACK);
+        tft.drawCentreString(buf, 80, 85, 4); 
+      } else {
+        tft.fillRect (0, 130, 128, 26, TFT_BLACK);
+        tft.drawCentreString(buf, 64, 131, 4);         
+      }
     }
   }
   else if (displayState == _Sensor1 || displayState == _Sensor2 || displayState == _Sensor3) {
@@ -603,9 +694,16 @@ void tftUpdate(States displayState, Timezone tz) {
     sprintf(buf, "W: %.0f%%", sensorsData[sensor].humidity);
     posY += FONTSIZE;
     tft.drawString(buf,  posX, posY, 4);
-    sprintf(buf, "C: %.0fHPa", sensorsData[sensor].pressure);
-    posY += FONTSIZE;
-    tft.drawString(buf, posX, posY, 4);
+    if (rotation == 1) {
+      sprintf(buf, "C: %.0fHPa", sensorsData[sensor].pressure);
+      posY += FONTSIZE;
+      tft.drawString(buf, posX, posY, 4);
+    } else {
+      sprintf(buf, "C: %.0f", sensorsData[sensor].pressure);
+      posY += FONTSIZE;
+      int posX1 = posX + tft.drawString(buf, posX, posY, 4) + 2;
+      tft.drawString("HPa", posX1, posY+2, 2);
+    }
     sprintf(buf, "B: %.2fV", sensorsData[sensor].battery);
     posY += FONTSIZE;
     tft.drawString(buf,  posX, posY, 4);           
@@ -616,31 +714,32 @@ void tftUpdate(States displayState, Timezone tz) {
   }
   else if (displayState == _WIFIConnected) {
     PRINTS(" connected\n");
-    PRINTS(WiFi.localIP());PRINTLN;
-    tft.drawCentreString("Adres IP:", 80, 10, 4);
-    tft.drawCentreString(WiFi.localIP().toString(), 80, 85, 2);
+    tft.drawString("Adres IP:", 3, 10, 4);
+    tft.drawString("192.168.0.103", 3, 85, 2);
     delay(5000);
   }
   else if (displayState == _NTPFailed) {
     PRINTS("1st NTP Failed\n");
-    tft.drawCentreString("Blad NTP", 80, 85, 4);
+    tft.drawString("Blad NTP", 3, 85, 4);
     delay(5000);
   }
   else if (displayState == _MDSFailed) {
     PRINTS("MDP Failed\n");
-    tft.drawCentreString("Blad MDP", 80, 85, 4);
+    tft.drawString("Blad MDP", 3, 85, 4);
     delay(5000);
   }
   else if (displayState == _WPS) {
     PRINTS("Connecting WPS\n");
-    tft.drawCentreString("WPS ...?", 80, 85, 4);      
+    tft.drawString("WPS ...?", 3, 85, 4);      
   }
   else {
     tft.drawCentreString("00:00", 80, 20, 7);
     tft.drawCentreString("Pogoda", 80, 85, 4);  
   }
   lastState = displayState;
+  preRotation = rotation;
 }
+
 
 void taskMQTT( void * parameter ) {
 
@@ -649,10 +748,10 @@ void taskMQTT( void * parameter ) {
 
   const TickType_t xTicksToWait = pdMS_TO_TICKS(Time2UpdateMQTT);
   // const TickType_t xTicksToWait = Time2UpdateMQTT / portTICK_PERIOD_MS;
-  UBaseType_t uxHighWaterMark;
+//  UBaseType_t uxHighWaterMark;
 
   while (true) {
-    uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+    // uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
     // Serial.print("\nStack IN:"); Serial.println(uxHighWaterMark);
     vTaskDelay( xTicksToWait );
     if ( MQTT_connect() ) {
@@ -672,7 +771,7 @@ void taskMQTT( void * parameter ) {
       }
       xSemaphoreGive(bufMutex);        
     }
-    uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
+    // uxHighWaterMark = uxTaskGetStackHighWaterMark( NULL );
     // Serial.print("\nStack OUT:"); Serial.println(uxHighWaterMark);
   }
 }
