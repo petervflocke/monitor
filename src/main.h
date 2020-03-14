@@ -12,6 +12,10 @@
 #define feedNumber   5
 #define fD          "-"
 
+#define BATSens      34
+#define R1           45.25f
+#define R2           96.50f
+
 #define dataSize 18 /* incoming data frame size */
 
 #define AIO_SERVER      "io.adafruit.com"
@@ -64,9 +68,12 @@ enum States
 #define LEDY 20
 #define LEDR 10
 #define FONTSIZE 26
-#define ROTTR 8
+#define ROTTR 8 /* max accelaration in one x,y,z axis to detect flipping the box */
+#define LMIN 10  /* lowets light range */
+#define LMAX 10000 /* highest light range */
+#define LMAXLED 255 /* max pwm for LED backlight for LMAX */
 
-
+#define TemCorrId0 -1.262235f
 
 const char jsonStruc[] PROGMEM = R"rawliteral(
 {"XC1":"%s",

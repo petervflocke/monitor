@@ -366,11 +366,15 @@ void loop()
 }
 
 void readLocalSens() {
+  float batteryLevel;
   xSemaphoreTake(bufMutex, portMAX_DELAY);
-  sensorsData[0].temperature = TempSensor.readTemperature();
+  sensorsData[0].temperature = TempSensor.readTemperature() + TemCorrId0;
   sensorsData[0].humidity = TempSensor.readHumidity();
   sensorsData[0].pressure = TempSensor.readPressure()/100.0F;
   sensorsData[0].timeStamp = now();
+  batteryLevel = ( ( (float)analogRead(BATSens)) / 4095.0f) * 3.30f+0.10f;
+  sensorsData[0].battery = batteryLevel + batteryLevel*R1/R2;
+  //sensorsData[0].battery = batteryLevel;
   xSemaphoreGive(bufMutex);     
 }
 
@@ -552,47 +556,40 @@ void tftUpdate(States displayState, Timezone tz) {
 
   char buf[20];
 
-//  uint16_t lux = LightSensor.read();
-//  long dutyCycle = map(constrain(lux,2,10000), 2, 10000, 2, 255);
-///  ledcWrite(ledChannel, dutyCycle);
-  ledcWrite(ledChannel, map(constrain(LightSensor.read(),2,10000), 2, 10000, 2, 255));
-  // PRINT("lux: ", lux);
-  // PRINT("  dutyCycle:  ", dutyCycle);
-  // PRINTLN;
+  //  uint16_t lux = LightSensor.read();
+  ledcWrite(ledChannel, map(constrain(LightSensor.read(), LMIN, LMAX), LMIN, LMAX, LMIN, LMAXLED));
 
 
-    sensors_event_t event; 
-    accelSensor.getEvent(&event);
-    if        ( event.acceleration.y >= ROTTR ) {
-      rotation = 1;
-      tft.setRotation(1);
-      PRINT("R 1: ", rotation); PRINTLN;
-    } else if ( event.acceleration.z >= ROTTR ) {
-      rotation = 0;
-      tft.setRotation(2);
-      PRINT("R 2: ", rotation); PRINTLN;
-    } else if ( event.acceleration.y <= -ROTTR) {
-      rotation = 1;
-      tft.setRotation(3);
-      PRINT("R 3: ", rotation); PRINTLN;
-    } else if ( event.acceleration.z <= -ROTTR) {
-      rotation = 0;
-      tft.setRotation(0);
-      PRINT("R 0: ", rotation); PRINTLN;
-    } else {
-      rotation = 1;
-      tft.setRotation(1);
-      PRINT("R E: ", rotation); PRINTLN;
-    }
-    // Serial.print("X: "); Serial.print(event.acceleration.x); Serial.print("  ");
-    // Serial.print("Y: "); Serial.print(event.acceleration.y); Serial.print("  ");
-    // Serial.print("Z: "); Serial.print(event.acceleration.z); Serial.println();
+  sensors_event_t event; 
+  accelSensor.getEvent(&event);
+  if        ( event.acceleration.y >= ROTTR ) {
+    rotation = 1;
+    tft.setRotation(1);
+    PRINT("R 1: ", rotation); PRINTLN;
+  } else if ( event.acceleration.z >= ROTTR ) {
+    rotation = 0;
+    tft.setRotation(2);
+    PRINT("R 2: ", rotation); PRINTLN;
+  } else if ( event.acceleration.y <= -ROTTR) {
+    rotation = 1;
+    tft.setRotation(3);
+    PRINT("R 3: ", rotation); PRINTLN;
+  } else if ( event.acceleration.z <= -ROTTR) {
+    rotation = 0;
+    tft.setRotation(0);
+    PRINT("R 0: ", rotation); PRINTLN;
+  } else {
+    rotation = 1;
+    tft.setRotation(1);
+    PRINT("R E: ", rotation); PRINTLN;
+  }
+  // Serial.print("X: "); Serial.print(event.acceleration.x); Serial.print("  ");
+  // Serial.print("Y: "); Serial.print(event.acceleration.y); Serial.print("  ");
+  // Serial.print("Z: "); Serial.print(event.acceleration.z); Serial.println();
 
   if (preRotation != rotation) {
     tft.fillScreen(TFT_BLACK); 
   }
-
-  
 
   tft.setTextSize(1);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
@@ -710,31 +707,31 @@ void tftUpdate(States displayState, Timezone tz) {
   }
   else if (displayState == _WIFI) {
     PRINTS("Connecting WIFI\n");
-    tft.drawCentreString("WiFi ...?", 80, 85, 4);
+    tft.drawCentreString("WiFi ...?", 60, 85, 4);
   }
   else if (displayState == _WIFIConnected) {
     PRINTS(" connected\n");
-    tft.drawString("Adres IP:", 3, 10, 4);
-    tft.drawString("192.168.0.103", 3, 85, 2);
+    tft.drawCentreString("Adres IP:", 60, 10, 4);
+    tft.drawCentreString(WiFi.localIP().toString(), 60, 85, 2);
     delay(5000);
   }
   else if (displayState == _NTPFailed) {
     PRINTS("1st NTP Failed\n");
-    tft.drawString("Blad NTP", 3, 85, 4);
+    tft.drawCentreString("Blad NTP", 60, 85, 4);
     delay(5000);
   }
   else if (displayState == _MDSFailed) {
     PRINTS("MDP Failed\n");
-    tft.drawString("Blad MDP", 3, 85, 4);
+    tft.drawCentreString("Blad MDP", 60, 85, 4);
     delay(5000);
   }
   else if (displayState == _WPS) {
     PRINTS("Connecting WPS\n");
-    tft.drawString("WPS ...?", 3, 85, 4);      
+    tft.drawCentreString("WPS ...?", 60, 85, 4);      
   }
   else {
-    tft.drawCentreString("00:00", 80, 20, 7);
-    tft.drawCentreString("Pogoda", 80, 85, 4);  
+    tft.drawCentreString("00:00", 60, 20, 7);
+    tft.drawCentreString("Pogoda", 60, 85, 4);  
   }
   lastState = displayState;
   preRotation = rotation;
