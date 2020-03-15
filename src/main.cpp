@@ -29,6 +29,9 @@
 #include <RH_CC110.h> // Radio part
 #include <SPI.h> // Not actually used but needed to compile
 
+#include <myScheduler.h>
+Schedular ScreenSaver(_Seconds);      // LED Matrix standby time after last PIR movement detection
+bool screenSaverNotActive = true;
 
 // --------- WPS Settings -----------------
 // press configPin during the reset or power on to reset old passwords and wait for WPS button
@@ -124,9 +127,15 @@ void setup()
 {
   #if  DEBUG_ON
     Serial.begin(115200);
-    delay(50);
+    while (!Serial)
+      ; // wait for serial port to connect. Needed for native USB
   #endif
   
+  pinMode(LED_BUILTIN, OUTPUT);     // setup buildin LED for future error and message info
+  pinMode(configPin, INPUT_PULLUP); // setup wps and menu button as imput always high
+  pinMode(pirPin, INPUT);           // input from PIR sensor
+  ScreenSaver.start();
+
   int i;
   for (i=0; i<sensorNumber; i++) {
     sensorsData[i].timeStamp = 0;
@@ -157,9 +166,6 @@ void setup()
   }
   accelSensor.setRange(ADXL345_RANGE_16_G);
  
-  pinMode(LED_BUILTIN, OUTPUT);     // setup buildin LED for future error and message info
-  pinMode(configPin, INPUT_PULLUP); // setup wps and menu button as imput always high
-
   tft.init();
   //* Set PWM for backlight */
   ledcSetup(ledChannel, freq, resolution);
@@ -556,32 +562,46 @@ void tftUpdate(States displayState, Timezone tz) {
 
   char buf[20];
 
-  //  uint16_t lux = LightSensor.read();
-  ledcWrite(ledChannel, map(constrain(LightSensor.read(), LMIN, LMAX), LMIN, LMAX, LMIN, LMAXLED));
-
+  if (digitalRead(pirPin)) {
+    ScreenSaver.start();
+    PRINTS("PIR Active\n");
+    // lastTime = digitalClockString();
+    //  uint16_t lux = LightSensor.read();
+    screenSaverNotActive = true;
+  } else {
+    if (ScreenSaver.check(ScreenTimeOut)) {
+    PRINTS("PIR NOT Active\n");
+    screenSaverNotActive = false;
+    } 
+  }
+  if (screenSaverNotActive) {
+    ledcWrite(ledChannel, map(constrain(LightSensor.read(), LMIN, LMAX), LMIN, LMAX, LMIN, LMAXLED));
+  } else {
+    ledcWrite(ledChannel, 0);
+  }
 
   sensors_event_t event; 
   accelSensor.getEvent(&event);
   if        ( event.acceleration.y >= ROTTR ) {
     rotation = 1;
     tft.setRotation(1);
-    PRINT("R 1: ", rotation); PRINTLN;
+    // PRINT("R 1: ", rotation); PRINTLN;
   } else if ( event.acceleration.z >= ROTTR ) {
     rotation = 0;
     tft.setRotation(2);
-    PRINT("R 2: ", rotation); PRINTLN;
+    // PRINT("R 2: ", rotation); PRINTLN;
   } else if ( event.acceleration.y <= -ROTTR) {
     rotation = 1;
     tft.setRotation(3);
-    PRINT("R 3: ", rotation); PRINTLN;
+    // PRINT("R 3: ", rotation); PRINTLN;
   } else if ( event.acceleration.z <= -ROTTR) {
     rotation = 0;
     tft.setRotation(0);
-    PRINT("R 0: ", rotation); PRINTLN;
+    // PRINT("R 0: ", rotation); PRINTLN;
   } else {
     rotation = 1;
     tft.setRotation(1);
-    PRINT("R E: ", rotation); PRINTLN;
+    //PRINT("R E: ", rotation); PRINTLN;
   }
   // Serial.print("X: "); Serial.print(event.acceleration.x); Serial.print("  ");
   // Serial.print("Y: "); Serial.print(event.acceleration.y); Serial.print("  ");

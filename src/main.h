@@ -1,12 +1,14 @@
 #include <Arduino.h>
 #include "credentials.h"
 #define DEBUG_ON 1
-// #undef DEBUG_ON
+#undef DEBUG_ON
 #define WPS_ON 1
 
 #define localDomain "pogoda" /* local brooadcast domain name pogoda.local */
 #define _setSyncInterval 3600 /* how offten shall the standard NTP sync be fired in seconds*/
 #define configPin 0  /* press button */
+#define pirPin     17
+#define ScreenTimeOut 300
 
 #define sensorNumber 3
 #define feedNumber   5
