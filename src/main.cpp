@@ -33,6 +33,9 @@
 Schedular ScreenSaver(_Seconds);      // LED Matrix standby time after last PIR movement detection
 bool screenSaverNotActive = true;
 
+#include "average.h"
+Smoothed <uint16_t> smoothedBat; 
+
 // --------- WPS Settings -----------------
 // press configPin during the reset or power on to reset old passwords and wait for WPS button
 // once receive new passwordds reset system
@@ -67,7 +70,6 @@ States tableStates[] = {_Time, _Sensor1, _Sensor2, _Sensor3};
 // ---------- Mutex for data buffer --------
 SemaphoreHandle_t bufMutex; 
 // -----------------------------------------
-
 
 void updateJson();
 void blink();
@@ -144,6 +146,9 @@ void setup()
     sensorsData[i].pressure = 0.0;
     sensorsData[i].battery = 0.0;
   }
+
+  smoothedBat.begin(analogRead(BATSens), BATReadings);
+
 
   if (!TempSensor.begin(0x76)) {
     PRINTS("Could not find a valid temp sensor, check wiring.\n");
@@ -373,14 +378,18 @@ void loop()
 
 void readLocalSens() {
   float batteryLevel;
+
+  smoothedBat.add(analogRead(BATSens));
+
   xSemaphoreTake(bufMutex, portMAX_DELAY);
   sensorsData[0].temperature = TempSensor.readTemperature() + TemCorrId0;
   sensorsData[0].humidity = TempSensor.readHumidity();
   sensorsData[0].pressure = TempSensor.readPressure()/100.0F;
   sensorsData[0].timeStamp = now();
-  batteryLevel = ( ( (float)analogRead(BATSens)) / 4095.0f) * 3.30f+0.10f;
+
+  // batteryLevel = ( (float)analogRead(BATSens) / 4095.0f) * 3.30f+0.10f;
+  batteryLevel = ( (float)smoothedBat.getAverage() / 4095.0f) * 3.30f+0.10f;
   sensorsData[0].battery = batteryLevel + batteryLevel*R1/R2;
-  //sensorsData[0].battery = batteryLevel;
   xSemaphoreGive(bufMutex);     
 }
 

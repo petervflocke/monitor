@@ -17,6 +17,7 @@
 #define BATSens      34
 #define R1           45.25f
 #define R2           96.50f
+#define BATReadings  16
 
 #define dataSize 18 /* incoming data frame size */
 
