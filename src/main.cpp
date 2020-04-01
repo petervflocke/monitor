@@ -136,7 +136,7 @@ void setup()
   pinMode(LED_BUILTIN, OUTPUT);     // setup buildin LED for future error and message info
   pinMode(configPin, INPUT_PULLUP); // setup wps and menu button as imput always high
   pinMode(pirPin, INPUT);           // input from PIR sensor
-  ScreenSaver.start();
+  ScreenSaver.start();              // start screen timeout counter
 
   int i;
   for (i=0; i<sensorNumber; i++) {
@@ -160,7 +160,7 @@ void setup()
                          Adafruit_BME280::SAMPLING_X16, // pressure
                          Adafruit_BME280::SAMPLING_X16, // humidity
                          Adafruit_BME280::FILTER_X16);
-
+  
   LightSensor.begin(ModeContinuous, ResolutionHigh);
   LightSensor.startConversion();
 
@@ -206,13 +206,26 @@ void setup()
 
   if (!wpsNeeded) {
     tftUpdate(_WIFI, CE);
-    WiFi.begin();
-    i = 1;
+    WiFi.disconnect(true, false);
+    PRINTS(".");
     blink();
+    WiFi.softAPdisconnect(true);
+    PRINTS(".");
+    blink();
+    WiFi.mode(WIFI_STA);
+    PRINTS(".");
+    blink();
+    i = 1;
     while ((WiFi.status() != WL_CONNECTED) && i!=0) {
-      if (button.uniquePress()) i = 0; // skip wifi run withou time current stamp
+      WiFi.begin();
       PRINTS(".");
       blink();
+      if (i >= 10) {
+        PRINTS("\nWIFI connection failled - rebooting\n");  
+        ESP.restart();  // reboot and try again
+      }
+      i++;
+      if (button.uniquePress()) i = 0; // skip wifi run withou time current stamp      
     }
 
     // client.setCACert(root_ca);
@@ -298,6 +311,7 @@ void setup()
         }
       }
     }
+    ScreenSaver.start();
 
     // xTaskCreate(
     //   taskMQTT,   /* start regular  MQTT update task*/
@@ -369,7 +383,6 @@ void loop()
       currentState = (currentState + 1) % numberOfStates;
       tftUpdate(tableStates[currentState], CE);
       PRINT("CurrentState :", currentState);PRINTLN;
-
       PRINT("\nRun on core: ",xPortGetCoreID());PRINTLN;
 
     }
@@ -579,8 +592,8 @@ void tftUpdate(States displayState, Timezone tz) {
     screenSaverNotActive = true;
   } else {
     if (ScreenSaver.check(ScreenTimeOut)) {
-    PRINTS("PIR NOT Active\n");
-    screenSaverNotActive = false;
+      PRINTS("PIR NOT Active\n");
+      screenSaverNotActive = false;
     } 
   }
   if (screenSaverNotActive) {
@@ -710,10 +723,11 @@ void tftUpdate(States displayState, Timezone tz) {
     t = tz.toLocal(sensorsData[sensor].timeStamp, &tcr);
     sprintf(buf, "%.2d:%.2d:%.2d", hour(t), minute(t), second(t));
     place += String(buf);
-    tft.setTextColor(color, TFT_BLACK);
+    // tft.setTextColor(color, TFT_BLACK);
+    tft.setTextColor(TFT_WHITE, TFT_BLACK);
     posX = 0; posY =  0;
     tft.drawString(place, posX, posY, 2);
-    tft.setTextColor(TFT_WHITE, TFT_BLACK);
+    // tft.setTextColor(TFT_WHITE, TFT_BLACK);
     sprintf(buf, "T: %.1f*C", sensorsData[sensor].temperature);
     posY += 20;
     tft.drawString(buf, posX, posY, 4);
@@ -766,7 +780,6 @@ void tftUpdate(States displayState, Timezone tz) {
   preRotation = rotation;
 }
 
-
 void taskMQTT( void * parameter ) {
 
   char buf[40];
@@ -804,7 +817,7 @@ void taskMQTT( void * parameter ) {
 
 
 // Function to connect and reconnect as necessary to the MQTT server.
-// Should be called in the loop function and it will take care if connecting.
+// Should be called in the loop function and it will take care if re-connecting is needed.
 boolean MQTT_connect() {
   int8_t ret;
 
